@@ -1,0 +1,293 @@
+// All money values are stored as integers in paise (Rs 1 = 100 paise).
+// This avoids floating point errors and matches what Razorpay expects.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url       = env("DATABASE_URL") // pooled: used by the app
+  directUrl = env("DIRECT_URL") // direct: used by migrations
+}
+
+enum Role {
+  CUSTOMER
+  RESTAURANT_OWNER
+  RIDER
+  ADMIN
+}
+
+enum OrderStatus {
+  PLACED
+  ACCEPTED
+  PREPARING
+  READY_FOR_PICKUP
+  PICKED_UP
+  DELIVERED
+  REJECTED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  COD
+  ONLINE
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum CouponType {
+  FLAT
+  PERCENT
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  phone        String?  @unique
+  passwordHash String
+  role         Role     @default(CUSTOMER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  addresses     Address[]
+  restaurants   Restaurant[]
+  cart          Cart?
+  orders        Order[]        @relation("CustomerOrders")
+  deliveries    Order[]        @relation("RiderOrders")
+  reviews       Review[]
+  refreshTokens RefreshToken[]
+  riderProfile  RiderProfile?
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Address {
+  id        String   @id @default(cuid())
+  userId    String
+  label     String?
+  line1     String
+  line2     String?
+  city      String
+  state     String
+  pincode   String
+  lat       Float?
+  lng       Float?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Restaurant {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  description String?
+  cuisines    String[]
+  imageUrl    String?
+  addressLine String
+  city        String
+  pincode     String
+  lat         Float?
+  lng         Float?
+  isOpen      Boolean  @default(false)
+  isApproved  Boolean  @default(false)
+  avgRating   Float    @default(0)
+  ratingCount Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner      User           @relation(fields: [ownerId], references: [id])
+  categories MenuCategory[]
+  items      MenuItem[]
+  orders     Order[]
+  reviews    Review[]
+  carts      Cart[]
+
+  @@index([ownerId])
+  @@index([city])
+}
+
+model MenuCategory {
+  id           String @id @default(cuid())
+  restaurantId String
+  name         String
+  sortOrder    Int    @default(0)
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  items      MenuItem[]
+
+  @@unique([restaurantId, name])
+}
+
+model MenuItem {
+  id           String   @id @default(cuid())
+  restaurantId String
+  categoryId   String?
+  name         String
+  description  String?
+  price        Int
+  isVeg        Boolean  @default(true)
+  isAvailable  Boolean  @default(true)
+  imageUrl     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  restaurant Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  category   MenuCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  @@index([restaurantId])
+}
+
+// One cart per customer. A cart can only hold items from one restaurant.
+model Cart {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  restaurantId String?
+  couponCode   String?
+  updatedAt    DateTime @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: SetNull)
+  items      CartItem[]
+}
+
+model CartItem {
+  id         String   @id @default(cuid())
+  cartId     String
+  menuItemId String
+  quantity   Int
+  createdAt  DateTime @default(now())
+
+  cart     Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@unique([cartId, menuItemId])
+}
+
+model Order {
+  id              String        @id @default(cuid())
+  customerId      String
+  restaurantId    String
+  riderId         String?
+  // Copy of the address at order time, so later edits don't change old orders
+  deliveryAddress Json
+  status          OrderStatus   @default(PLACED)
+  paymentMethod   PaymentMethod
+  paymentStatus   PaymentStatus @default(PENDING)
+  subtotal        Int
+  deliveryFee     Int
+  discount        Int           @default(0)
+  total           Int
+  couponCode      String?
+  notes           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  acceptedAt      DateTime?
+  pickedUpAt      DateTime?
+  deliveredAt     DateTime?
+  cancelledAt     DateTime?
+
+  customer   User        @relation("CustomerOrders", fields: [customerId], references: [id])
+  restaurant Restaurant  @relation(fields: [restaurantId], references: [id])
+  rider      User?       @relation("RiderOrders", fields: [riderId], references: [id])
+  items      OrderItem[]
+  payment    Payment?
+  review     Review?
+
+  @@index([customerId])
+  @@index([restaurantId, status])
+  @@index([riderId])
+  @@index([status])
+}
+
+// Name and price are copied at order time so menu changes don't alter old orders.
+model OrderItem {
+  id         String  @id @default(cuid())
+  orderId    String
+  menuItemId String?
+  name       String
+  price      Int
+  quantity   Int
+
+  order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  orderId           String        @unique
+  provider          String        @default("razorpay")
+  providerOrderId   String?       @unique
+  providerPaymentId String?
+  amount            Int
+  status            PaymentStatus @default(PENDING)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model Review {
+  id           String   @id @default(cuid())
+  orderId      String   @unique
+  userId       String
+  restaurantId String
+  rating       Int
+  comment      String?
+  createdAt    DateTime @default(now())
+
+  order      Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id])
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId])
+}
+
+model Coupon {
+  id          String     @id @default(cuid())
+  code        String     @unique
+  type        CouponType
+  value       Int
+  minOrder    Int        @default(0)
+  maxDiscount Int?
+  expiresAt   DateTime?
+  usageLimit  Int?
+  usedCount   Int        @default(0)
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+}
+
+model RiderProfile {
+  userId      String   @id
+  vehicleType String?
+  isOnline    Boolean  @default(false)
+  currentLat  Float?
+  currentLng  Float?
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

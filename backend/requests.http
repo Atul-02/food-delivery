@@ -1,0 +1,285 @@
+### =============================================================
+### Manual API testing
+### Needs the "REST Client" VS Code extension (by Huachao Mao).
+### 1. Start the server:  cd backend && npm run dev
+### 2. Click "Send Request" above any request below.
+### Run the LOGIN requests first: later requests reuse their tokens.
+### Money is in paise: 24000 = Rs 240.
+### =============================================================
+
+@base = http://localhost:4000/api/v1
+
+### Health check (should return {"status":"ok"})
+GET http://localhost:4000/health
+
+
+### =============== 1. LOGIN (run these first) ===============
+
+# @name customerLogin
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "customer@demo.local", "password": "Customer@12345" }
+
+###
+# @name ownerLogin
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "owner@demo.local", "password": "Owner@12345" }
+
+###
+# @name adminLogin
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "admin@fooddelivery.local", "password": "Admin@12345" }
+
+###
+@customer = {{customerLogin.response.body.$.accessToken}}
+@owner = {{ownerLogin.response.body.$.accessToken}}
+@admin = {{adminLogin.response.body.$.accessToken}}
+
+
+### =============== 2. AUTH ===============
+
+### Register a new customer (change the email each time)
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Rahul Sharma",
+  "email": "rahul1@example.com",
+  "phone": "9876543210",
+  "password": "Password123"
+}
+
+### Register a restaurant owner
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{
+  "name": "Priya Owner",
+  "email": "priya1@example.com",
+  "password": "Password123",
+  "role": "RESTAURANT_OWNER"
+}
+
+### Get new tokens using the refresh token (each refresh token works once)
+POST {{base}}/auth/refresh
+Content-Type: application/json
+
+{ "refreshToken": "{{customerLogin.response.body.$.refreshToken}}" }
+
+
+### =============== 3. CUSTOMER PROFILE & ADDRESSES ===============
+
+### My profile
+GET {{base}}/users/me
+Authorization: Bearer {{customer}}
+
+### Update my profile
+PATCH {{base}}/users/me
+Authorization: Bearer {{customer}}
+Content-Type: application/json
+
+{ "name": "Demo Customer Updated" }
+
+###
+# @name addresses
+GET {{base}}/users/me/addresses
+Authorization: Bearer {{customer}}
+
+###
+@addressId = {{addresses.response.body.$[0].id}}
+
+### Add an address
+POST {{base}}/users/me/addresses
+Authorization: Bearer {{customer}}
+Content-Type: application/json
+
+{
+  "label": "Office",
+  "line1": "5th Floor, Tech Park",
+  "city": "Pune",
+  "state": "Maharashtra",
+  "pincode": "411014"
+}
+
+
+### =============== 4. BROWSE RESTAURANTS (no login needed) ===============
+
+# @name restaurants
+GET {{base}}/restaurants
+
+###
+@restaurantId = {{restaurants.response.body.$.items[0].id}}
+
+### Search by name or cuisine
+GET {{base}}/restaurants?search=dosa
+
+### Filter by cuisine and city
+GET {{base}}/restaurants?cuisine=north%20indian&city=pune
+
+### One restaurant
+GET {{base}}/restaurants/{{restaurantId}}
+
+###
+# @name menu
+GET {{base}}/restaurants/{{restaurantId}}/menu
+
+###
+@itemId = {{menu.response.body.$.categories[0].items[0].id}}
+@itemId2 = {{menu.response.body.$.categories[0].items[1].id}}
+
+
+### =============== 5. CART (customer) ===============
+
+### View cart
+GET {{base}}/cart
+Authorization: Bearer {{customer}}
+
+### Add first menu item (x2)
+POST {{base}}/cart/items
+Authorization: Bearer {{customer}}
+Content-Type: application/json
+
+{ "menuItemId": "{{itemId}}", "quantity": 2 }
+
+### Add second menu item
+POST {{base}}/cart/items
+Authorization: Bearer {{customer}}
+Content-Type: application/json
+
+{ "menuItemId": "{{itemId2}}", "quantity": 1 }
+
+### Change quantity (0 removes it)
+PATCH {{base}}/cart/items/{{itemId}}
+Authorization: Bearer {{customer}}
+Content-Type: application/json
+
+{ "quantity": 3 }
+
+### Remove one item
+DELETE {{base}}/cart/items/{{itemId2}}
+Authorization: Bearer {{customer}}
+
+### Empty the cart
+DELETE {{base}}/cart
+Authorization: Bearer {{customer}}
+
+
+### =============== 6. ORDERS (customer) ===============
+### Add items to the cart first (section 5)
+
+# @name placeOrder
+POST {{base}}/orders
+Authorization: Bearer {{customer}}
+Content-Type: application/json
+
+{ "addressId": "{{addressId}}", "paymentMethod": "COD", "notes": "Less spicy please" }
+
+###
+@orderId = {{placeOrder.response.body.$.id}}
+
+### My orders
+GET {{base}}/orders
+Authorization: Bearer {{customer}}
+
+### One order
+GET {{base}}/orders/{{orderId}}
+Authorization: Bearer {{customer}}
+
+### Cancel (only works while PLACED or ACCEPTED)
+POST {{base}}/orders/{{orderId}}/cancel
+Authorization: Bearer {{customer}}
+
+
+### =============== 7. RESTAURANT OWNER ===============
+
+# @name myRestaurants
+GET {{base}}/owner/restaurants
+Authorization: Bearer {{owner}}
+
+###
+@myRestaurantId = {{myRestaurants.response.body.$[0].id}}
+
+### Incoming orders (try ?status=PLACED)
+GET {{base}}/owner/restaurants/{{myRestaurantId}}/orders?status=PLACED
+Authorization: Bearer {{owner}}
+
+### Move order forward: ACCEPTED -> PREPARING -> READY_FOR_PICKUP (or REJECTED)
+PATCH {{base}}/owner/orders/{{orderId}}/status
+Authorization: Bearer {{owner}}
+Content-Type: application/json
+
+{ "status": "ACCEPTED" }
+
+### Open / close the restaurant
+PATCH {{base}}/owner/restaurants/{{myRestaurantId}}/status
+Authorization: Bearer {{owner}}
+Content-Type: application/json
+
+{ "isOpen": true }
+
+### Full menu (including unavailable items)
+GET {{base}}/owner/restaurants/{{myRestaurantId}}/menu
+Authorization: Bearer {{owner}}
+
+### Add a category
+# @name newCategory
+POST {{base}}/owner/restaurants/{{myRestaurantId}}/categories
+Authorization: Bearer {{owner}}
+Content-Type: application/json
+
+{ "name": "Desserts", "sortOrder": 5 }
+
+### Add a menu item (price in paise)
+# @name newItem
+POST {{base}}/owner/restaurants/{{myRestaurantId}}/items
+Authorization: Bearer {{owner}}
+Content-Type: application/json
+
+{
+  "name": "Gulab Jamun",
+  "description": "2 pieces",
+  "price": 9000,
+  "isVeg": true,
+  "categoryId": "{{newCategory.response.body.$.id}}"
+}
+
+### Mark item sold out
+PATCH {{base}}/owner/items/{{newItem.response.body.$.id}}
+Authorization: Bearer {{owner}}
+Content-Type: application/json
+
+{ "isAvailable": false }
+
+### Create a new restaurant (starts unapproved)
+# @name newRestaurant
+POST {{base}}/owner/restaurants
+Authorization: Bearer {{owner}}
+Content-Type: application/json
+
+{
+  "name": "Wok Express",
+  "description": "Indo-Chinese",
+  "cuisines": ["chinese"],
+  "addressLine": "8 Baner Road",
+  "city": "Pune",
+  "pincode": "411045"
+}
+
+
+### =============== 8. ADMIN ===============
+
+### Restaurants waiting for approval
+GET {{base}}/admin/restaurants?approved=false
+Authorization: Bearer {{admin}}
+
+### Approve a restaurant
+PATCH {{base}}/admin/restaurants/{{newRestaurant.response.body.$.id}}/approval
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "isApproved": true }
